@@ -1,0 +1,927 @@
+Awesome — let’s get you fully ready to build with **Eureka** on **Java 21** + **Spring Boot 3.5.x** and crush interview questions. I’ll show a clean, production-friendly setup (server + two services), include commented code, test commands & expected outputs, and finish with concise interview Q\&A.
+
+> ✅ **Version pairing (important):** Spring Boot **3.5.x** pairs with **Spring Cloud 2025.0.x**. We’ll use `2025.0.0`.
+
+---
+
+# 0) Project layout
+
+We’ll create three apps:
+
+```
+discovery-server     // Eureka Server (port 8761)
+inventory-service    // registers to Eureka (ports 8081/8082)
+order-service        // registers to Eureka and CALLS inventory via service name (port 8080)
+```
+
+---
+
+# 1) Eureka Server (discovery-server)
+
+### `pom.xml` (Java 21, Boot 3.5.x, Spring Cloud 2025.0.0)
+
+```xml
+<!-- Parent manages Boot deps -->
+<parent>
+  <groupId>org.springframework.boot</groupId>
+  <artifactId>spring-boot-starter-parent</artifactId>
+  <version>3.5.3</version> <!-- any 3.5.x -->
+</parent>
+
+<properties>
+  <java.version>21</java.version>
+  <spring-cloud.version>2025.0.0</spring-cloud.version> <!-- pairs with Boot 3.5.x -->
+</properties>
+
+<!-- Import Spring Cloud BOM -->
+<dependencyManagement>
+  <dependencies>
+    <dependency>
+      <groupId>org.springframework.cloud</groupId>
+      <artifactId>spring-cloud-dependencies</artifactId>
+      <version>${spring-cloud.version}</version>
+      <type>pom</type>
+      <scope>import</scope>
+    </dependency>
+  </dependencies>
+</dependencyManagement>
+
+<dependencies>
+  <!-- Eureka server starter -->
+  <dependency>
+    <groupId>org.springframework.cloud</groupId>
+    <artifactId>spring-cloud-starter-netflix-eureka-server</artifactId>
+  </dependency>
+
+  <dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-actuator</artifactId>
+  </dependency>
+
+  <!-- Optional: secure the dashboard with basic auth -->
+  <!-- Add this only if you want credentials on /eureka and dashboard -->
+  <!--
+  <dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-security</artifactId>
+  </dependency>
+  -->
+</dependencies>
+```
+
+> Starter names are current (`eureka-server` for server, `eureka-client` for clients).
+
+### `DiscoveryServerApplication.java`
+
+```java
+// comments included as you prefer
+package com.example.discovery;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.cloud.netflix.eureka.server.EnableEurekaServer;
+
+// @EnableEurekaServer turns this Spring Boot app into a Eureka registry
+@SpringBootApplication
+@EnableEurekaServer
+public class DiscoveryServerApplication {
+  public static void main(String[] args) {
+    SpringApplication.run(DiscoveryServerApplication.class, args);
+  }
+}
+```
+
+### `application.yml`
+
+```yaml
+server:
+  port: 8761
+
+spring:
+  application:
+    name: discovery-server
+
+eureka:
+  client:
+    # a registry should not register with itself
+    register-with-eureka: false
+    fetch-registry: false
+  server:
+    # keep self-preservation ON in prod to favor availability
+    enable-self-preservation: true
+    eviction-interval-timer-in-ms: 60000
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+```
+
+> If you **secure the server**, add (example) and update clients accordingly:
+
+```yaml
+# discovery-server only (optional)
+spring:
+  security:
+    user:
+      name: eureka
+      password: eureka123
+```
+
+Clients then use: `http://eureka:eureka123@localhost:8761/eureka` as `defaultZone`.
+
+**Run & check:**
+
+* Start app → open `http://localhost:8761` (dashboard).
+* Expect: *“No instances available”* until clients register.
+
+---
+
+# 2) Service A: inventory-service
+
+### `pom.xml`
+
+```xml
+<parent>…3.5.3…</parent>
+<properties>
+  <java.version>21</java.version>
+  <spring-cloud.version>2025.0.0</spring-cloud.version>
+</properties>
+<dependencyManagement>…spring-cloud-dependencies…</dependencyManagement>
+
+<dependencies>
+  <dependency>
+    <groupId>org.springframework.cloud</groupId>
+    <artifactId>spring-cloud-starter-netflix-eureka-client</artifactId>
+  </dependency>
+  <dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-web</artifactId>
+  </dependency>
+  <dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-actuator</artifactId>
+  </dependency>
+</dependencies>
+```
+
+### `application.yml`
+
+```yaml
+server:
+  port: 8081
+
+spring:
+  application:
+    name: inventory-service  # service-id visible in Eureka
+
+eureka:
+  client:
+    service-url:
+      defaultZone: http://localhost:8761/eureka
+    healthcheck:
+      enabled: true  # propagate actuator health to Eureka
+  instance:
+    prefer-ip-address: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+```
+
+> Health propagation uses `eureka.client.healthcheck.enabled=true`. Without it, Eureka will show `UP` by heartbeat alone. ([Home][1])
+
+### Simple controller
+
+```java
+package com.example.inventory;
+
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+import java.util.List;
+
+// Simple endpoint that returns items and the port (so we can see LB in action)
+@RestController
+public class InventoryController {
+
+  @Value("${server.port}")
+  private String port; // inject port to prove which instance served the call
+
+  @GetMapping("/inventory/items")
+  public List<String> items() {
+    // return a small list + tag the serving instance
+    return List.of("book", "pen", "notebook", "served-by:" + port);
+  }
+}
+```
+
+**Run #1:** start on 8081 (default).
+**Run #2 (second instance):** start another JVM with `--server.port=8082`.
+Both should appear on the Eureka dashboard as **inventory-service** (2 instances).
+
+---
+
+# 3) Service B (caller): order-service
+
+This one registers to Eureka and **calls `inventory-service` by name** using **Spring Cloud LoadBalancer** + **Eureka**.
+
+> In modern Spring Cloud, Ribbon is retired; use **Spring Cloud LoadBalancer**. We’ll use a **`@LoadBalanced RestClient.Builder`** so URIs like `http://inventory-service/...` resolve via Eureka. ([Home][2])
+
+### `pom.xml`
+
+```xml
+<parent>…3.5.3…</parent>
+<properties>
+  <java.version>21</java.version>
+  <spring-cloud.version>2025.0.0</spring-cloud.version>
+</properties>
+<dependencyManagement>…spring-cloud-dependencies…</dependencyManagement>
+
+<dependencies>
+  <dependency>
+    <groupId>org.springframework.cloud</groupId>
+    <artifactId>spring-cloud-starter-netflix-eureka-client</artifactId>
+  </dependency>
+
+  <!-- HTTP + LB -->
+  <dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-web</artifactId>
+  </dependency>
+  <dependency>
+    <groupId>org.springframework.cloud</groupId>
+    <artifactId>spring-cloud-starter-loadbalancer</artifactId>
+  </dependency>
+  <dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-actuator</artifactId>
+  </dependency>
+</dependencies>
+```
+
+### `application.yml`
+
+```yaml
+server:
+  port: 8080
+
+spring:
+  application:
+    name: order-service
+
+eureka:
+  client:
+    service-url:
+      defaultZone: http://localhost:8761/eureka
+    healthcheck:
+      enabled: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+```
+
+### RestClient config + controller (commented)
+
+```java
+package com.example.order;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.web.client.RestClientBuilder;
+import org.springframework.cloud.client.loadbalancer.LoadBalanced; // enables name-based resolution
+import org.springframework.context.annotation.Bean;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.client.RestClient;
+
+import java.util.List;
+
+@SpringBootApplication
+public class OrderServiceApplication {
+
+  public static void main(String[] args) {
+    SpringApplication.run(OrderServiceApplication.class, args);
+  }
+
+  // @LoadBalanced tells Spring Cloud to resolve "http://{service-id}" via Eureka
+  @Bean
+  @LoadBalanced
+  RestClient.Builder restClientBuilder() {
+    // RestClient is the modern, fluent replacement for RestTemplate in Spring 6.1+
+    return RestClient.builder();
+  }
+}
+
+@RestController
+class OrdersController {
+
+  private final RestClient.Builder lb; // load-balanced builder
+
+  OrdersController(@LoadBalanced RestClient.Builder lb) {
+    this.lb = lb;
+  }
+
+  // Call inventory-service via service-id instead of host:port
+  @GetMapping("/orders/items")
+  public List<String> itemsFromInventory() {
+    ResponseEntity<List> resp = lb.build()
+        .get()
+        .uri("http://inventory-service/inventory/items") // service name, not host
+        .retrieve()
+        .toEntity(List.class);
+
+    // Return the upstream list as-is (contains served-by:port marker)
+    return resp.getBody();
+  }
+}
+```
+
+> `@LoadBalanced RestClient.Builder` is officially supported in Spring Cloud Commons; URIs must use the **service name**. ([Home][2])
+> Alternatively, you can manually pick instances via `DiscoveryClient` (the Spring guide shows this approach).
+
+---
+
+# 4) Run & test (with expected outputs)
+
+1. Start **discovery-server** (port 8761).
+2. Start **inventory-service** twice:
+
+   * Instance A: `8081`
+   * Instance B: `8082` (use `--server.port=8082`)
+3. Start **order-service** (port 8080).
+
+**Check dashboard:** `http://localhost:8761` → you should see:
+
+* `INVENTORY-SERVICE` → **2** instances
+* `ORDER-SERVICE` → **1** instance
+
+**Call through the LB (round-robin by default):**
+
+```bash
+# 1st call (likely hits 8081)
+curl http://localhost:8080/orders/items
+# → ["book","pen","notebook","served-by:8081"]
+
+# 2nd call (likely hits 8082)
+curl http://localhost:8080/orders/items
+# → ["book","pen","notebook","served-by:8082"]
+```
+
+**What you’ll see in logs (snippets):**
+
+```
+inventory-service-8081  : Registered instance INVENTORY-SERVICE/localhost:inventory-service:8081 with status UP
+inventory-service-8082  : Registered instance INVENTORY-SERVICE/localhost:inventory-service:8082 with status UP
+order-service           : Using ServiceInstance: inventory-service:8081
+order-service           : Using ServiceInstance: inventory-service:8082
+```
+
+---
+
+# 5) Production notes (short & useful)
+
+* **Version alignment**: always match Boot & Cloud (Boot 3.5.x ↔ Cloud 2025.0.x).
+* **Health to Eureka**: enable `eureka.client.healthcheck.enabled=true` so “DOWN” services stop receiving traffic. ([Home][1])
+* **Prefer IP vs hostname**: `eureka.instance.prefer-ip-address=true` avoids odd hostname/loopback issues.
+* **Self-preservation**: leave **on** in prod (prevents mass eviction during network issues).
+* **LB strategy**: default is Round-Robin; customize via LoadBalancer configuration if needed. ([Home][3])
+* **OpenFeign option**: Feign integrates with Eureka + LoadBalancer automatically if you prefer declarative clients. ([Home][4])
+* **Security**: if you add Spring Security on the server, clients must include credentials in `defaultZone` URL (e.g., `http://user:pass@host/eureka`).
+* **HA Eureka**: run **2+ Eureka servers** and point each server at its peer(s):
+
+  ```yaml
+  # eureka-1.yml
+  eureka:
+    client:
+      register-with-eureka: true
+      fetch-registry: true
+      service-url:
+        defaultZone: http://eureka2:8761/eureka
+  # eureka-2.yml points back to eureka1
+  ```
+
+  Clients list both: `http://eureka1:8761/eureka,http://eureka2:8761/eureka`.
+
+---
+
+# 6) Common errors & quick fixes
+
+* **`No instances available for inventory-service`**
+  → wrong `defaultZone`, app name mismatch, or client not started yet.
+* **Stuck in `UNKNOWN` on dashboard**
+  → make sure `eureka.client.healthcheck.enabled=true` is in **application.yml** (not bootstrap), and Actuator is on the classpath. ([Home][5])
+* **LB not resolving `http://service-id/...`**
+  → ensure `spring-cloud-starter-loadbalancer` is on the caller, and you injected a **`@LoadBalanced RestClient.Builder`** (or `WebClient.Builder`). ([Home][2])
+
+---
+
+# 7) Interview Q & A (crisp)
+
+1. **What is Eureka?**
+   A service registry; apps register themselves and discover others at runtime.
+
+2. **Client-side vs server-side discovery?**
+   Eureka uses **client-side**: the caller queries the registry and picks an instance (often via Spring Cloud LoadBalancer). Nginx/ELB style is **server-side**.
+
+3. **Why is Eureka considered AP (Availability/Partition-tolerant)?**
+   It favors **availability** under network partitions (self-preservation avoids mass eviction), trading immediate consistency. Great for microservices where eventual consistency is ok.
+
+4. **Heartbeats & leases?**
+   Clients renew leases (heartbeats). If heartbeat stops beyond the **lease expiration**, server evicts the instance.
+
+5. **Self-preservation mode?**
+   When too many renewals are missed, server **stops evicting** to avoid wiping healthy instances during a network hiccup. Turn off only for local dev.
+
+6. **How does health influence routing?**
+   By default Eureka reports `UP` after registration. To propagate real health (Actuator) to Eureka, set `eureka.client.healthcheck.enabled=true`; then other clients/LB avoid `DOWN` instances. ([Home][1])
+
+7. **Ribbon vs Spring Cloud LoadBalancer?**
+   Ribbon is **retired**; use **Spring Cloud LoadBalancer** (works with RestClient/WebClient/RestTemplate via `@LoadBalanced`). ([Home][6])
+
+8. **Do I need `@EnableEurekaClient`?**
+   No — just add the Eureka client starter; discovery auto-config kicks in. (`@EnableEurekaServer` **is** required on the server.)
+
+9. **Boot 3.5.x compatible Spring Cloud?**
+   **Spring Cloud 2025.0.x**. Knowing this matrix is a common interview check.
+
+10. **How to call another service by name?**
+    Inject `@LoadBalanced RestClient.Builder` (or `WebClient.Builder`) and call `http://{service-id}/path`. ([Home][2])
+
+11. **Blue-green/canary with Eureka?**
+    Register both versions; use **LB rules** (e.g., weight, zone, or custom `ServiceInstanceListSupplier`) or route by header at edge/gateway.
+
+12. **Securing Eureka?**
+    Protect dashboard + `/eureka/**` with Spring Security; clients include credentials in `defaultZone`.
+
+---
+
+If you want, I can also generate **Gradle** builds, a **Docker-compose** to run all three, or switch the caller to **OpenFeign** with circuit-breaking.
+
+[1]: https://docs.spring.io/spring-cloud-netflix/reference/configprops.html?utm_source=chatgpt.com "Configuration Properties :: Spring Cloud Netflix"
+[2]: https://docs.spring.io/spring-cloud-commons/reference/spring-cloud-commons/common-abstractions.html?utm_source=chatgpt.com "Spring Cloud Commons: Common Abstractions"
+[3]: https://docs.spring.io/spring-cloud-commons/reference/spring-cloud-commons/loadbalancer.html?utm_source=chatgpt.com "Spring Cloud LoadBalancer"
+[4]: https://docs.spring.io/spring-cloud-openfeign/docs/current/reference/html/?utm_source=chatgpt.com "Spring Cloud OpenFeign"
+[5]: https://docs.spring.io/spring-cloud-netflix/docs/current/reference/html/?utm_source=chatgpt.com "Spring Cloud Netflix"
+[6]: https://docs.spring.io/spring-cloud-commons/docs/current/reference/html/?utm_source=chatgpt.com "Cloud Native Applications"
+=======================================================================================================================================================
+CODES::
+======================================================================================================================================================
+
+Alright — let’s make the **full Eureka project** look clean and professional.
+Here’s the **final folder structure** for all three apps:
+
+---
+
+## 📦 **1. discovery-server** (Eureka Server)
+
+```
+discovery-server
+ ├── src/main/java/com/example/discovery
+ │    └── DiscoveryServerApplication.java
+ └── src/main/resources
+      └── application.yml
+```
+
+**DiscoveryServerApplication.java**
+
+```java
+package com.example.discovery;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.cloud.netflix.eureka.server.EnableEurekaServer;
+
+/**
+ * Eureka Server application to register and discover services.
+ */
+@SpringBootApplication
+@EnableEurekaServer
+public class DiscoveryServerApplication {
+    public static void main(String[] args) {
+        SpringApplication.run(DiscoveryServerApplication.class, args);
+    }
+}
+```
+
+**application.yml**
+
+```yaml
+server:
+  port: 8761
+
+spring:
+  application:
+    name: discovery-server
+
+eureka:
+  client:
+    register-with-eureka: false
+    fetch-registry: false
+  server:
+    enable-self-preservation: true
+    eviction-interval-timer-in-ms: 60000
+```
+
+---
+
+## 📦 **2. inventory-service** (Eureka Client)
+
+```
+inventory-service
+ ├── src/main/java/com/example/inventory
+ │    ├── InventoryServiceApplication.java
+ │    ├── controller
+ │    │    └── InventoryController.java
+ │    └── service
+ │         └── InventoryService.java
+ └── src/main/resources
+      └── application.yml
+```
+
+**InventoryServiceApplication.java**
+
+```java
+package com.example.inventory;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+/**
+ * Main entry point for Inventory Service.
+ */
+@SpringBootApplication
+public class InventoryServiceApplication {
+    public static void main(String[] args) {
+        SpringApplication.run(InventoryServiceApplication.class, args);
+    }
+}
+```
+
+**controller/InventoryController.java**
+
+```java
+package com.example.inventory.controller;
+
+import com.example.inventory.service.InventoryService;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RestController;
+import java.util.List;
+
+/**
+ * REST endpoints for inventory operations.
+ */
+@RestController
+public class InventoryController {
+
+    private final InventoryService inventoryService;
+
+    public InventoryController(InventoryService inventoryService) {
+        this.inventoryService = inventoryService;
+    }
+
+    @GetMapping("/inventory/items")
+    public List<String> items() {
+        return inventoryService.getItems();
+    }
+}
+```
+
+**service/InventoryService.java**
+
+```java
+package com.example.inventory.service;
+
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Service;
+import java.util.List;
+
+/**
+ * Business logic for managing inventory.
+ */
+@Service
+public class InventoryService {
+
+    @Value("${server.port}")
+    private String port;
+
+    public List<String> getItems() {
+        return List.of("book", "pen", "notebook", "served-by:" + port);
+    }
+}
+```
+
+**application.yml**
+
+```yaml
+server:
+  port: 8081
+
+spring:
+  application:
+    name: inventory-service
+
+eureka:
+  client:
+    service-url:
+      defaultZone: http://localhost:8761/eureka
+    healthcheck:
+      enabled: true
+  instance:
+    prefer-ip-address: true
+```
+
+---
+
+## 📦 **3. order-service** (Eureka Client & Caller)
+
+```
+order-service
+ ├── src/main/java/com/example/order
+ │    ├── OrderServiceApplication.java
+ │    ├── config
+ │    │    └── RestClientConfig.java
+ │    └── controller
+ │         └── OrdersController.java
+ └── src/main/resources
+      └── application.yml
+```
+
+**OrderServiceApplication.java**
+
+```java
+package com.example.order;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+/**
+ * Main entry point for Order Service.
+ */
+@SpringBootApplication
+public class OrderServiceApplication {
+    public static void main(String[] args) {
+        SpringApplication.run(OrderServiceApplication.class, args);
+    }
+}
+```
+
+**config/RestClientConfig.java**
+
+```java
+package com.example.order.config;
+
+import org.springframework.cloud.client.loadbalancer.LoadBalanced;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.web.client.RestClient;
+
+/**
+ * Configuration for load-balanced RestClient.
+ */
+@Configuration
+public class RestClientConfig {
+
+    @Bean
+    @LoadBalanced
+    public RestClient.Builder restClientBuilder() {
+        return RestClient.builder();
+    }
+}
+```
+
+**controller/OrdersController.java**
+
+```java
+package com.example.order.controller;
+
+import org.springframework.cloud.client.loadbalancer.LoadBalanced;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.client.RestClient;
+
+import java.util.List;
+
+/**
+ * Handles order operations and communicates with inventory-service.
+ */
+@RestController
+public class OrdersController {
+
+    private final RestClient.Builder restClientBuilder;
+
+    public OrdersController(@LoadBalanced RestClient.Builder restClientBuilder) {
+        this.restClientBuilder = restClientBuilder;
+    }
+
+    @GetMapping("/orders/items")
+    public List<String> itemsFromInventory() {
+        ResponseEntity<List> response = restClientBuilder.build()
+                .get()
+                .uri("http://inventory-service/inventory/items")
+                .retrieve()
+                .toEntity(List.class);
+
+        return response.getBody();
+    }
+}
+```
+
+**application.yml**
+
+```yaml
+server:
+  port: 8080
+
+spring:
+  application:
+    name: order-service
+
+eureka:
+  client:
+    service-url:
+      defaultZone: http://localhost:8761/eureka
+    healthcheck:
+      enabled: true
+```
+
+---
+
+## 🚀 How to run
+
+1. **Start Eureka server**
+
+```bash
+cd discovery-server
+mvn spring-boot:run
+```
+
+Open [http://localhost:8761](http://localhost:8761)
+
+2. **Start inventory-service (instance 1)**
+
+```bash
+cd inventory-service
+mvn spring-boot:run
+```
+
+3. **Start inventory-service (instance 2)**
+
+```bash
+mvn spring-boot:run -Dspring-boot.run.arguments="--server.port=8082"
+```
+
+4. **Start order-service**
+
+```bash
+cd order-service
+mvn spring-boot:run
+```
+
+---
+
+## 🧪 Test Load Balancing
+
+```bash
+curl http://localhost:8080/orders/items
+# → ["book","pen","notebook","served-by:8081"]
+
+curl http://localhost:8080/orders/items
+# → ["book","pen","notebook","served-by:8082"]
+```
+
+---
+
+If you want, I can also **add OpenFeign client** instead of RestClient for the order-service, which many interviewers prefer because it’s cleaner for inter-service calls.
+
+Do you want me to extend this with OpenFeign as well?
+
+
+---
+
+## ✅ Benefits for interviews
+
+* **Separation of concerns** → Main app, config, and controllers are separate.
+* **Easier testing** → `RestClientConfig` can be mocked in tests.
+* **Scalable** → New controllers or configs can be added without clutter.
+* **Clear package scanning** → Spring Boot automatically picks them up since all packages are under `com.example.order`.
+
+---
+
+=============================================================================================================================
+restClient vs restTemplate:
+=============================================================================================================================
+In **Spring Boot 3.2+ / Java 21** (and especially in your **Spring Boot 3.5.x** case),
+the main difference is that **`RestClient`** is the **modern replacement** for `RestTemplate`, optimized for newer HTTP APIs, fluent style, and future-proofing.
+
+Here’s a **clear breakdown**:
+
+---
+
+## **1. Background**
+
+| Feature                  | RestTemplate                                        | RestClient                                          |
+| ------------------------ | --------------------------------------------------- | --------------------------------------------------- |
+| **Introduced**           | Very old (Spring 3, around 2011)                    | Spring 6.1 (2023)                                   |
+| **Status**               | Deprecated for new development, but still supported | The new preferred synchronous HTTP client           |
+| **Underlying API**       | Java's `HttpURLConnection` or Apache HttpClient     | Java 11+ `HttpClient`                               |
+| **Style**                | Verbose, less flexible                              | Fluent, modern, chainable API                       |
+| **LoadBalancer support** | Works with `@LoadBalanced`                          | Works with `@LoadBalanced`                          |
+| **Async Support**        | No (synchronous only)                               | No (still synchronous, but async planned in future) |
+
+---
+
+## **2. Example Comparison**
+
+### **Using RestTemplate**
+
+```java
+@Bean
+@LoadBalanced
+public RestTemplate restTemplate(RestTemplateBuilder builder) {
+    return builder.build();
+}
+
+@Autowired
+private RestTemplate restTemplate;
+
+public List<String> getItems() {
+    return restTemplate.getForObject(
+        "http://inventory-service/inventory/items", List.class
+    );
+}
+```
+
+* Verbose in configuration
+* Methods are rigid (`getForObject`, `postForEntity`, etc.)
+
+---
+
+### **Using RestClient** (Spring Boot 3.5.x way)
+
+```java
+@Bean
+@LoadBalanced
+RestClient.Builder restClientBuilder() {
+    return RestClient.builder();
+}
+
+@Autowired
+@LoadBalanced
+private RestClient.Builder builder;
+
+public List<String> getItems() {
+    return builder.build()
+        .get()
+        .uri("http://inventory-service/inventory/items")
+        .retrieve()
+        .toEntity(List.class)
+        .getBody();
+}
+```
+
+* Fluent API (`get().uri().retrieve().toEntity()`)
+* Modern, readable, future-proof
+* Supports newer HTTP features from Java 21
+
+---
+
+## **3. Interview Key Points**
+
+**Q: Why did Spring introduce RestClient?**
+
+> To provide a modern, fluent, type-safe, and Java 11+ compatible HTTP client API, replacing the outdated `RestTemplate` that depends on older networking libraries.
+
+**Q: Which one should we use in new projects?**
+
+> Always prefer `RestClient` in Spring Boot 3.2+ for synchronous calls. `RestTemplate` is still fine for legacy projects but will not get major new features.
+
+**Q: Does RestClient support async calls?**
+
+> Not yet. Async will come via `HttpClient` integration or reactive `WebClient`. For async today, use `WebClient`.
+
+**Q: Can RestClient work with Eureka `@LoadBalanced`?**
+
+> Yes. Annotating the `RestClient.Builder` bean with `@LoadBalanced` enables service name resolution (`http://service-id/...`).
+
+---
+
+✅ **Rule of thumb for interviews**:
+
+* **REST synchronous in Spring Boot 3.5+ → RestClient**
+* **REST reactive/async → WebClient**
+* **Legacy support → RestTemplate**
+
+---
+
+If you want, I can **rewrite your Eureka OrderService example** using **both RestTemplate and RestClient side-by-side**, so you can answer *"Which one and why?"* in interviews.
+Would you like me to prepare that?

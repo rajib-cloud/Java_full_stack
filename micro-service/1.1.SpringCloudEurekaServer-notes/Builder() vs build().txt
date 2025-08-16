@@ -1,0 +1,78 @@
+In the context of **`RestClient`** (Spring 6.1+),
+`builder()` and `build()` are part of the **Builder Pattern**, and they do very different jobs:
+
+---
+
+## 1️⃣ **`builder()`**
+
+* **Purpose:** Creates and returns a **`RestClient.Builder`** instance.
+* **Who calls it?** You call it when you want to start **configuring** a `RestClient`.
+* **Where it comes from:**
+
+  * If you call `RestClient.builder()` → you get a **new builder** each time (no load balancing).
+  * If you call an **injected** `RestClient.Builder` bean (with `@LoadBalanced`) → you get a builder **pre-configured with Eureka support**.
+* **Analogy:** Like picking up a blank blueprint before designing your house.
+
+**Example:**
+
+```java
+RestClient.Builder builder = RestClient.builder();
+```
+
+or in Spring:
+
+```java
+@Autowired
+@LoadBalanced
+private RestClient.Builder builder; // already preconfigured for Eureka
+```
+
+---
+
+## 2️⃣ **`build()`**
+
+* **Purpose:** Creates the **actual** `RestClient` instance from the builder’s current configuration.
+* **Who calls it?** You call it **after** you've done all customizations.
+* **Once built:** The `RestClient` is ready to **send HTTP requests**.
+* **Analogy:** Like finalizing the blueprint into an actual, ready-to-use house.
+
+**Example:**
+
+```java
+RestClient client = builder.build(); // Creates a ready-to-use RestClient
+```
+
+---
+
+## 🔄 **Flow Together**
+
+```java
+// 1. Get a builder (either directly or from Spring with @LoadBalanced)
+RestClient.Builder builder = RestClient.builder();
+
+// 2. Configure if needed
+builder.baseUrl("http://inventory-service");
+
+// 3. Build the actual client
+RestClient client = builder.build();
+
+// 4. Use the client
+String response = client.get()
+        .uri("/inventory/items")
+        .retrieve()
+        .body(String.class);
+```
+
+---
+
+## 📌 Summary Table
+
+| Method      | Belongs to           | Returns              | Role                                          |
+| ----------- | -------------------- | -------------------- | --------------------------------------------- |
+| `builder()` | `RestClient` class   | `RestClient.Builder` | Gives you a configuration object to customize |
+| `build()`   | `RestClient.Builder` | `RestClient`         | Creates the actual HTTP client to use         |
+
+---
+
+If you want, I can make you a **"RestClient vs RestTemplate + builder() vs build()"** interview answer sheet so you can easily explain it in interviews.
+It’ll be short, precise, and impressive.

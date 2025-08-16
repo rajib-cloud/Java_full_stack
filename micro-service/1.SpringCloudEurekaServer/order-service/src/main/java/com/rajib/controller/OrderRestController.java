@@ -1,0 +1,31 @@
+package com.rajib.controller;
+
+import java.util.List;
+
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.client.RestClient;
+
+import lombok.RequiredArgsConstructor;
+
+@RestController
+@RequestMapping("/order")
+@RequiredArgsConstructor
+public class OrderRestController {
+
+	private final RestClient.Builder rest;
+	
+	@GetMapping("/itemFetch")
+	public List<String> itemsFromInventory(){
+		ResponseEntity<List> response = rest.build()
+				.get()
+				.uri("http://inventory-service/items")
+				.retrieve()
+				.toEntity(List.class);
+		
+		return response.getBody();
+				
+	}
+}

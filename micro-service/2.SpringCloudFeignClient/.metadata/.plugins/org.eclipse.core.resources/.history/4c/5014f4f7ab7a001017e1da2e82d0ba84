@@ -1,0 +1,16 @@
+package com.feign.controller;
+
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+import com.feign.client.StudentClient;
+
+@RestController
+@RequestMapping("/school")
+public class SchoolRestController {
+
+	@Autowired
+	private StudentClient studentClient;
+	
+}

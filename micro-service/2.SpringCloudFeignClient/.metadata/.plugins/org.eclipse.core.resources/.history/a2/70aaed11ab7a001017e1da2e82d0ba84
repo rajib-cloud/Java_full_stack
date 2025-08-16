@@ -1,0 +1,12 @@
+package com.feign.client;
+
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+
+import com.feign.entity.Student;
+
+public interface StudentClient {
+
+	@GetMapping("/{id}")
+	public Student getStudent(@PathVariable Long id);
+}
